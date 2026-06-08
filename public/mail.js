@@ -12,15 +12,11 @@
     MAIL_ITEMS_PER_PAGE: 10,
     DEFAULT_ITEMS_PER_PAGE: 10,
     API_BASE: '/api/mail-all',
-    AI_API: '/api/ai',
     REFRESH_TOKEN_API: '/api/refresh-token'
   }
 
   const AUTH_ERROR_MESSAGE = '密码验证失败，请输入正确验证密码'
 
-  let aiController = null
-  let currentAiMailIndex = null
-  let currentAiEventSource = null
 
   const state = {
     emailData: [],
@@ -372,7 +368,7 @@
         <td>${item.send}</td>
         <td>${item.subject}</td>
         <td>${item.date}</td>
-        <td><button class="btn btn-sm" data-action="view">查看</button> <button class="btn btn-sm" data-action="ai">AI 解读</button></td>
+        <td><button class="btn btn-sm" data-action="view">查看</button></td>
       </tr>
     `).join('')
 
@@ -432,199 +428,6 @@
     }
 
     openModal('mail-modal')
-  }
-
-  /* ---------- AI 解读 ---------- */
-  const escapeHtml = (value) => {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;')
-  }
-
-  const setAiStatus = (message) => {
-    const status = $('#ai-status')
-    if (status) {
-      status.textContent = message
-      status.classList.remove('thinking')
-    }
-  }
-
-  const setAiThinking = (message) => {
-    const status = $('#ai-status')
-    if (status) {
-      status.textContent = message
-      status.classList.add('thinking')
-    }
-  }
-
-  const appendAiThinking = (content) => {
-    const thinking = $('#ai-thinking')
-    if (!thinking || !content) return
-    thinking.classList.add('active')
-    thinking.textContent += content
-    thinking.scrollTop = thinking.scrollHeight
-  }
-
-  let aiAccumulatedContent = ''
-
-  const setAiSummary = (content, append = false) => {
-    const summary = $('#ai-summary')
-    if (!summary) return
-
-    if (append) {
-      aiAccumulatedContent += content
-      summary.textContent = aiAccumulatedContent
-    } else {
-      aiAccumulatedContent = content
-      summary.textContent = content
-      summary.innerHTML = marked.parse(aiAccumulatedContent)
-    }
-    summary.scrollTop = summary.scrollHeight
-  }
-
-  const fillAiDetails = (result) => {
-    const ai = result.ai || {}
-
-    $('#ai-type').textContent = escapeHtml(ai.mail_type || '未知')
-    $('#ai-platform').textContent = escapeHtml(ai.platform || '未知')
-    $('#ai-code').textContent = escapeHtml(ai.code || '未识别到验证码')
-    $('#ai-risk').textContent = escapeHtml(ai.risk_level || '未知')
-    $('#ai-suggestion').textContent = escapeHtml(ai.suggestion || '暂无建议')
-
-    const summary = $('#ai-summary')
-    if (summary) {
-      summary.classList.remove('ai-cursor')
-    }
-
-    const details = $('#ai-details')
-    if (details) {
-      details.classList.add('ready')
-    }
-  }
-
-  const analyzeMailWithAI = async (index) => {
-    if (currentAiEventSource) {
-      currentAiEventSource.close()
-    }
-
-    const item = state.mailData[index]
-    if (!item) return
-
-    currentAiMailIndex = index
-    openModal('ai-modal')
-
-    // 重置 AI 解读卡片状态
-    setAiStatus('正在连接 AI 解读服务...')
-    const thinking = $('#ai-thinking')
-    if (thinking) {
-      thinking.classList.remove('active')
-      thinking.textContent = ''
-    }
-    setAiSummary('准备生成摘要...')
-    const details = $('#ai-details')
-    if (details) details.classList.remove('ready')
-
-    if (aiController) {
-      aiController.abort()
-    }
-    aiController = new AbortController()
-
-    const prompt = `请分析以下邮件内容，提取关键信息并用中文总结：
-
-发件人：${item.send}
-主题：${item.subject}
-日期：${item.date}
-内容：
-${item.text || item.html || '(无内容)'}
-
-请分析：
-1. 邮件类型（验证码、营销、通知等）
-2. 关键信息提取
-3. 是否需要回复或处理`
-
-    try {
-      const response = await fetch(CONFIG.AI_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }], password: getPassword() }),
-        signal: aiController.signal
-      })
-
-      if (!response.ok) {
-        const err = await response.json()
-        if (response.status === 401) throw new Error(AUTH_ERROR_MESSAGE)
-        throw new Error(err.error || `请求失败: ${response.status}`)
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let accumulatedSummary = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-
-        const lines = buffer.split('\n')
-        buffer = lines.pop()
-
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            const eventName = line.slice(7).trim()
-            continue
-          }
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6)
-            if (data === '[DONE]') continue
-
-            try {
-              const parsed = JSON.parse(data)
-              const delta = parsed.choices?.[0]?.delta
-
-              if (delta?.reasoning) {
-                setAiThinking('AI 正在思考...')
-                appendAiThinking(delta.reasoning)
-              }
-
-              if (delta?.content) {
-                setAiSummary(delta.content, true)
-              }
-            } catch (e) {
-              // 忽略解析错误
-            }
-          }
-        }
-      }
-
-      setAiStatus('解读完成')
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setAiSummary('已停止')
-      } else {
-        setAiSummary(`错误: ${err.message}`)
-      }
-    } finally {
-      if (currentAiEventSource) {
-        currentAiEventSource.close()
-        currentAiEventSource = null
-      }
-    }
-  }
-
-  const stopAiAnalysis = () => {
-    if (aiController) {
-      aiController.abort()
-      aiController = null
-    }
-    if (currentAiEventSource) {
-      currentAiEventSource.close()
-      currentAiEventSource = null
-    }
   }
 
   /* ---------- 文件上传拖拽 ---------- */
@@ -763,8 +566,6 @@ ${item.text || item.html || '(无内容)'}
 
       if (btn.dataset.action === 'view') {
         viewMailDetail(globalIndex)
-      } else if (btn.dataset.action === 'ai') {
-        analyzeMailWithAI(globalIndex)
       }
     })
 
@@ -780,11 +581,6 @@ ${item.text || item.html || '(无内容)'}
     // 返回按钮
     $('#back-btn').addEventListener('click', showAccountSection)
 
-    // AI 关闭按钮
-    $('#ai-close').addEventListener('click', () => {
-      stopAiAnalysis()
-      closeModal('ai-modal')
-    })
 
     // 刷新 Token 确认弹窗
     $('#refresh-token-cancel').addEventListener('click', () => closeModal('refresh-token-modal'))

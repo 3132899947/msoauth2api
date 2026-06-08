@@ -21,7 +21,6 @@ export default {
       if (url.pathname === '/api/refresh-token') return handleRefreshToken(request, env);
       if (url.pathname === '/api/process-inbox') return handleProcessMailbox(request, env, 'inbox');
       if (url.pathname === '/api/process-junk') return handleProcessMailbox(request, env, 'junkemail');
-      if (url.pathname === '/api/ai') return handleAi(request, env);
 
       return env.ASSETS.fetch(request);
     } catch (error) {
@@ -210,33 +209,4 @@ async function handleProcessMailbox(request, env, mailbox) {
   }
 
   return json({ message: 'Mailbox processed successfully', mailbox, deleted });
-}
-
-async function handleAi(request, env) {
-  const params = await readParams(request);
-  checkPassword(params, env);
-
-  if (!env.AI_API_KEY || !env.AI_API_URL || !env.AI_MODEL) {
-    throw statusError('AI_API_KEY, AI_API_URL, AI_MODEL are required', 500);
-  }
-
-  const response = await fetch(`${env.AI_API_URL.replace(/\/$/, '')}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${env.AI_API_KEY}`,
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.AI_MODEL,
-      messages: params.messages,
-      stream: Boolean(params.stream)
-    })
-  });
-
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      'content-type': response.headers.get('content-type') || 'application/json; charset=utf-8'
-    }
-  });
 }
